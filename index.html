@@ -1,0 +1,1105 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>3D 互动圣诞树 (发光增强版)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;700;900&family=Playfair+Display:ital,wght@0,400;0,700;1,400&family=Monsieur+La+Doulaise&display=swap" rel="stylesheet">
+    
+    <script type="importmap">
+{
+  "imports": {
+    "react": "https://esm.sh/react@18.2.0",
+    "react/": "https://esm.sh/react@18.2.0/",
+    "react-dom/client": "https://esm.sh/react-dom@18.2.0/client",
+    "three": "https://esm.sh/three@0.160.0",
+    "@react-three/fiber": "https://esm.sh/@react-three/fiber@8.15.16?external=react,react-dom,three",
+    "@react-three/drei": "https://esm.sh/@react-three/drei@9.99.0?external=react,react-dom,three,@react-three/fiber",
+    "@react-three/postprocessing": "https://esm.sh/@react-three/postprocessing@2.16.0?external=react,react-dom,three,@react-three/fiber",
+    "@tensorflow/tfjs": "https://esm.sh/@tensorflow/tfjs@4.17.0",
+    "@tensorflow-models/handpose": "https://esm.sh/@tensorflow-models/handpose@0.1.0?external=@tensorflow/tfjs",
+    "react-webcam": "https://esm.sh/react-webcam@7.2.0?external=react,react-dom",
+    "react-dom/": "https://esm.sh/react-dom@^19.2.3/"
+  }
+}
+</script>
+    
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <style>
+      body { margin: 0; background-color: #010a05; overflow: hidden; touch-action: none; }
+      .font-luxury { font-family: 'Cinzel', serif; }
+      .font-body { font-family: 'Playfair Display', serif; }
+      .font-script { font-family: 'Monsieur La Doulaise', cursive; }
+      
+      @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+      .animate-spin { animation: spin 1s linear infinite; }
+      @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }
+      .animate-pulse { animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+
+    <script type="text/babel" data-type="module">
+      import React, { useState, useCallback, useRef, useEffect, useMemo, useLayoutEffect } from 'react';
+      import ReactDOM from 'react-dom/client';
+      import * as THREE from 'three';
+      import { Canvas, useFrame, useThree, useLoader } from '@react-three/fiber';
+      import { Environment, Stars } from '@react-three/drei';
+      // Re-imported Postprocessing components
+      import { EffectComposer, Bloom, Vignette } from '@react-three/postprocessing';
+      import Webcam from 'react-webcam';
+      import * as tf from '@tensorflow/tfjs';
+      import * as handpose from '@tensorflow-models/handpose';
+
+      // --- UTILS ---
+      const randomVector3 = (r) => {
+        const theta = Math.random() * Math.PI * 2;
+        const phi = Math.acos(2 * Math.random() - 1);
+        const x = r * Math.sin(phi) * Math.cos(theta);
+        const y = r * Math.sin(phi) * Math.sin(theta);
+        const z = r * Math.cos(phi);
+        return new THREE.Vector3(x, y, z);
+      };
+
+      const getConePosition = (height, radius, progress) => {
+        const y = (progress - 0.5) * height;
+        const r = (1 - progress) * radius;
+        const angle = Math.random() * Math.PI * 2;
+        const x = r * Math.cos(angle);
+        const z = r * Math.sin(angle);
+        return new THREE.Vector3(x, y, z);
+      };
+
+      const generateFoliageData = (count, treeHeight, treeRadius) => {
+        const target = new Float32Array(count * 3);
+        const chaos = new Float32Array(count * 3);
+        const randoms = new Float32Array(count);
+
+        for (let i = 0; i < count; i++) {
+          const progress = 1 - Math.sqrt(Math.random()); 
+          
+          const posT = getConePosition(treeHeight, treeRadius, progress);
+          posT.x += (Math.random() - 0.5) * 1.0;
+          posT.z += (Math.random() - 0.5) * 1.0;
+          posT.y += (Math.random() - 0.5) * 1.0;
+
+          target[i * 3] = posT.x;
+          target[i * 3 + 1] = posT.y;
+          target[i * 3 + 2] = posT.z;
+
+          const posC = randomVector3(treeHeight * 1.5);
+          chaos[i * 3] = posC.x;
+          chaos[i * 3 + 1] = posC.y;
+          chaos[i * 3 + 2] = posC.z;
+          
+          randoms[i] = Math.random();
+        }
+        return { target, chaos, randoms };
+      };
+
+      const generateSpiralData = (count, height, radius, turns) => {
+        const target = new Float32Array(count * 3);
+        const chaos = new Float32Array(count * 3);
+
+        for (let i = 0; i < count; i++) {
+          const t = i / count;
+          const y = (t - 0.5) * height;
+          const r = (1 - t) * radius + 0.5;
+          const angle = t * Math.PI * 2 * turns;
+
+          target[i * 3] = r * Math.cos(angle);
+          target[i * 3 + 1] = y;
+          target[i * 3 + 2] = r * Math.sin(angle);
+
+          const posC = randomVector3(height * 1.2);
+          chaos[i * 3] = posC.x;
+          chaos[i * 3 + 1] = posC.y;
+          chaos[i * 3 + 2] = posC.z;
+        }
+        return { target, chaos };
+      };
+
+      const lerp = (start, end, t) => start * (1 - t) + end * t;
+
+      // --- COMPONENTS ---
+
+      // 1. Foliage (Optimized Geometry, but ready for Bloom)
+      const Foliage = ({ mixFactor, colors }) => {
+        const count = 12000; 
+        const materialRef = useRef(null);
+        const currentMixRef = useRef(1);
+        const { target, chaos, randoms } = useMemo(() => generateFoliageData(count, 18, 7.5), [count]);
+
+        const uniforms = useMemo(() => ({
+          uTime: { value: 0 },
+          uMix: { value: 1 },
+          uSize: { value: 6.5 }, 
+          uColorBottom: { value: new THREE.Color(colors.bottom) },
+          uColorTop: { value: new THREE.Color(colors.top) }
+        }), [colors]);
+
+        useFrame((state, delta) => {
+          if (materialRef.current) {
+            const speed = 2.0 * delta; 
+            currentMixRef.current = lerp(currentMixRef.current, mixFactor, speed);
+            materialRef.current.uniforms.uTime.value = state.clock.elapsedTime;
+            materialRef.current.uniforms.uMix.value = currentMixRef.current;
+            materialRef.current.uniforms.uColorBottom.value.set(colors.bottom);
+            materialRef.current.uniforms.uColorTop.value.set(colors.top);
+          }
+        });
+
+        const vertexShader = `
+          precision highp float;
+          uniform float uTime;
+          uniform float uMix;
+          uniform float uSize;
+          attribute vec3 aTargetPos;
+          attribute vec3 aChaosPos;
+          attribute float aRandom;
+          varying vec3 vPos;
+          varying float vRandom;
+          varying float vIsSnow;
+          void main() {
+            vRandom = aRandom;
+            vIsSnow = step(0.85, aRandom);
+            vec3 pos = mix(aChaosPos, aTargetPos, uMix);
+            float breath = sin(uTime + pos.y * 0.5) * 0.05 * uMix;
+            pos.x += pos.x * breath;
+            pos.z += pos.z * breath;
+            vPos = pos;
+            vec4 mvPosition = modelViewMatrix * vec4(pos, 1.0);
+            gl_Position = projectionMatrix * mvPosition;
+            gl_PointSize = uSize * (20.0 / -mvPosition.z) * (0.6 + 0.8 * aRandom);
+          }
+        `;
+
+        const fragmentShader = `
+          precision highp float;
+          uniform vec3 uColorBottom;
+          uniform vec3 uColorTop;
+          varying vec3 vPos;
+          varying float vRandom;
+          varying float vIsSnow;
+          void main() {
+            float h = (vPos.y + 9.0) / 18.0;
+            h = clamp(h, 0.0, 1.0);
+            vec3 color = mix(uColorBottom, uColorTop, h);
+            color *= 0.6 + 0.6 * vRandom;
+            vec3 snowColor = vec3(0.95, 0.98, 1.0);
+            color = mix(color, snowColor, vIsSnow * 0.9);
+            float dist = length(gl_PointCoord - vec2(0.5));
+            if (dist > 0.5) discard;
+            float alpha = 1.0 - smoothstep(0.3, 0.5, dist);
+            gl_FragColor = vec4(color, alpha);
+          }
+        `;
+
+        return (
+          <points>
+            <bufferGeometry>
+              <bufferAttribute attach="attributes-position" count={count} array={target} itemSize={3} />
+              <bufferAttribute attach="attributes-aTargetPos" count={count} array={target} itemSize={3} />
+              <bufferAttribute attach="attributes-aChaosPos" count={count} array={chaos} itemSize={3} />
+              <bufferAttribute attach="attributes-aRandom" count={count} array={randoms} itemSize={1} />
+            </bufferGeometry>
+            <shaderMaterial
+              ref={materialRef}
+              vertexShader={vertexShader}
+              fragmentShader={fragmentShader}
+              uniforms={uniforms}
+              transparent
+              depthWrite={false}
+              toneMapped={false} /* Allow bloom */
+            />
+          </points>
+        );
+      };
+
+      // 2. Ornaments
+      const createCandyCaneGeometry = () => {
+          const path = new THREE.CatmullRomCurve3([
+              new THREE.Vector3(0, -1.0, 0),
+              new THREE.Vector3(0, 0.5, 0),
+              new THREE.Vector3(0.1, 0.8, 0),
+              new THREE.Vector3(0.4, 0.9, 0),
+              new THREE.Vector3(0.6, 0.6, 0) 
+          ]);
+          const geometry = new THREE.TubeGeometry(path, 16, 0.12, 5, false);
+          geometry.center();
+          return geometry;
+      };
+
+      const createStarGeometry = (points, outerRadius, innerRadius, depth) => {
+          const shape = new THREE.Shape();
+          const step = (Math.PI * 2) / (points * 2);
+          shape.moveTo(0, outerRadius);
+          for(let i = 0; i < points * 2; i++) {
+              const radius = (i % 2 === 0) ? outerRadius : innerRadius;
+              const angle = i * step;
+              shape.lineTo(Math.sin(angle) * radius, Math.cos(angle) * radius);
+          }
+          shape.closePath();
+          const geometry = new THREE.ExtrudeGeometry(shape, { depth, bevelEnabled: false }); 
+          geometry.center();
+          return geometry;
+      };
+
+      const generateCandyStripeTexture = () => {
+          const canvas = document.createElement('canvas');
+          canvas.width = 64; 
+          canvas.height = 64;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) return null;
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(0, 0, 64, 64);
+          ctx.fillStyle = '#cc0000';
+          for (let i = -64; i < 128; i += 21) {
+              ctx.beginPath();
+              ctx.moveTo(i, 0);
+              ctx.lineTo(i + 10, 0);
+              ctx.lineTo(i + 10 + 64, 64);
+              ctx.lineTo(i + 64, 64);
+              ctx.closePath();
+              ctx.fill();
+          }
+          const tex = new THREE.CanvasTexture(canvas);
+          tex.wrapS = THREE.RepeatWrapping;
+          tex.wrapT = THREE.RepeatWrapping;
+          tex.repeat.set(4, 1); 
+          return tex;
+      }
+
+      const generateSignatureTexture = (text) => {
+          const canvas = document.createElement('canvas');
+          canvas.width = 512;
+          canvas.height = 128;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) return null;
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+          if (!text) return new THREE.CanvasTexture(canvas);
+          ctx.fillStyle = '#111111';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.font = "bold 60px 'Monsieur La Doulaise', cursive";
+          ctx.fillText(text, canvas.width / 2, canvas.height / 2);
+          const tex = new THREE.CanvasTexture(canvas);
+          tex.needsUpdate = true;
+          return tex;
+      }
+
+      const generateCardTexture = () => {
+          const canvas = document.createElement('canvas');
+          canvas.width = 128;
+          canvas.height = 160;
+          const ctx = canvas.getContext('2d');
+          if (ctx) {
+              ctx.fillStyle = '#000000';
+              ctx.fillRect(0,0, 128, 160);
+          }
+          return new THREE.CanvasTexture(canvas);
+      }
+
+      const PhotoFrameMesh = ({ index, item, mixFactor, texture, signatureTexture, activePhotoIndex, inputRef }) => {
+          const groupRef = useRef(null);
+          const currentMixRef = useRef(1);
+          const zoomMixRef = useRef(0);
+          const { camera } = useThree();
+          const vecPos = useMemo(() => new THREE.Vector3(), []);
+          const vecScale = useMemo(() => new THREE.Vector3(), []);
+
+          const { frameArgs, photoArgs, photoPos, textPos, textArgs } = useMemo(() => {
+              const img = texture.image;
+              const width = img?.width || 1;
+              const height = img?.height || 1;
+              const aspect = width / height;
+              const maxSize = 0.85;
+              let pw, ph;
+              if (aspect >= 1) { pw = maxSize; ph = maxSize / aspect; } 
+              else { ph = maxSize; pw = maxSize * aspect; }
+              const mSide = 0.08; const mTop = 0.08; const mBottom = 0.20;
+              const fw = pw + mSide * 2; const fh = ph + mTop + mBottom;
+              const py = (fh / 2) - mTop - (ph / 2);
+              const ty = -(fh / 2) + (mBottom / 2);
+              return {
+                  frameArgs: [fw, fh, 0.05],
+                  photoArgs: [pw, ph],
+                  photoPos: [0, py, 0.03],
+                  textPos: [0, ty, 0.03],
+                  textArgs: [fw, mBottom]
+              };
+          }, [texture]);
+
+          useFrame((state, delta) => {
+              if (!groupRef.current) return;
+              const speed = 2.0 * delta;
+              currentMixRef.current = lerp(currentMixRef.current, mixFactor, speed);
+              const t = currentMixRef.current;
+              
+              const isActive = activePhotoIndex && activePhotoIndex.current === index;
+              const isPinching = inputRef && inputRef.current.isPinching && isActive;
+              
+              const targetZoom = isPinching ? 1.0 : 0.0;
+              zoomMixRef.current = lerp(zoomMixRef.current, targetZoom, delta * 5.0);
+              const zt = zoomMixRef.current; 
+
+              vecPos.lerpVectors(item.chaosPos, item.targetPos, t);
+              if (zt > 0.01) {
+                  const zoomDist = 10.0;
+                  const vecZoomPos = camera.position.clone().add(camera.getWorldDirection(new THREE.Vector3()).multiplyScalar(zoomDist));
+                  if (groupRef.current.parent) groupRef.current.parent.worldToLocal(vecZoomPos);
+                  groupRef.current.position.lerpVectors(vecPos, vecZoomPos, zt);
+                  groupRef.current.lookAt(camera.position);
+              } else {
+                  groupRef.current.position.copy(vecPos);
+                  if (t > 0.8) {
+                      groupRef.current.lookAt(0, groupRef.current.position.y, 0); 
+                      groupRef.current.rotateY(Math.PI); 
+                  } else {
+                      groupRef.current.lookAt(state.camera.position);
+                  }
+              }
+
+              vecScale.lerpVectors(item.chaosScale, item.targetScale, t);
+              const zoomedScaleVec = new THREE.Vector3(2.5, 2.5, 2.5);
+              vecScale.lerp(zoomedScaleVec, zt);
+              groupRef.current.scale.copy(vecScale);
+          });
+
+          return (
+              <group ref={groupRef}>
+                  <mesh>
+                      <boxGeometry args={frameArgs} />
+                      <meshStandardMaterial color="#ffffff" roughness={0.4} metalness={0.1} />
+                  </mesh>
+                  <mesh position={photoPos}>
+                      <planeGeometry args={photoArgs} />
+                      <meshStandardMaterial map={texture} roughness={0.4} />
+                  </mesh>
+                  {signatureTexture && (
+                      <mesh position={textPos}>
+                          <planeGeometry args={textArgs} />
+                          <meshBasicMaterial map={signatureTexture} transparent={true} opacity={0.85} depthWrite={false} />
+                      </mesh>
+                  )}
+              </group>
+          );
+      };
+
+      const GiftBoxMesh = ({ item, mixFactor }) => {
+          const groupRef = useRef(null);
+          const currentMixRef = useRef(1);
+          const vecPos = useMemo(() => new THREE.Vector3(), []);
+          const vecScale = useMemo(() => new THREE.Vector3(), []);
+          
+          useFrame((state, delta) => {
+              if (!groupRef.current) return;
+              const speed = 2.0 * delta;
+              currentMixRef.current = lerp(currentMixRef.current, mixFactor, speed);
+              const t = currentMixRef.current;
+              vecPos.lerpVectors(item.chaosPos, item.targetPos, t);
+              groupRef.current.position.copy(vecPos);
+              vecScale.lerpVectors(item.chaosScale, item.targetScale, t);
+              groupRef.current.scale.copy(vecScale);
+              groupRef.current.rotation.copy(item.rotation);
+          });
+
+          return (
+              <group ref={groupRef}>
+                  <mesh>
+                      <boxGeometry args={[1, 1, 1]} />
+                      <meshStandardMaterial color={item.color} roughness={0.4} metalness={0.1} />
+                  </mesh>
+                  <mesh scale={[1.05, 1.05, 0.2]}><boxGeometry args={[1, 1, 1]} /><meshStandardMaterial color="#FFD700" metalness={0.8} roughness={0.2} /></mesh>
+                  <mesh scale={[0.2, 1.05, 1.05]}><boxGeometry args={[1, 1, 1]} /><meshStandardMaterial color="#FFD700" metalness={0.8} roughness={0.2} /></mesh>
+              </group>
+          );
+      };
+
+      const UserPhotoOrnament = ({ index, item, mixFactor, url, signatureTexture, activePhotoIndex, inputRef }) => {
+          const texture = useLoader(THREE.TextureLoader, url);
+          return <PhotoFrameMesh index={index} item={item} mixFactor={mixFactor} texture={texture} signatureTexture={signatureTexture} activePhotoIndex={activePhotoIndex} inputRef={inputRef} />;
+      };
+
+      const SuspensePhotoOrnament = (props) => (
+          <React.Suspense fallback={
+               <group position={props.item.targetPos}>
+                  <mesh scale={props.item.targetScale}>
+                      <boxGeometry args={[1, 1.2, 0.05]} />
+                      <meshStandardMaterial color="#eee" />
+                  </mesh>
+               </group>
+          }>
+              <UserPhotoOrnament {...props} />
+          </React.Suspense>
+      );
+
+      const Ornaments = ({ mixFactor, type, count, colors, scale = 1, userImages = [], signatureText, inputRef }) => {
+        const meshRef = useRef(null);
+        const dummy = useMemo(() => new THREE.Object3D(), []);
+        const currentMixRef = useRef(1);
+        const photoGroupRef = useRef(null);
+        const activePhotoIndex = useRef(-1);
+        const { camera } = useThree();
+
+        const candyTexture = useMemo(() => (type === 'CANDY' ? generateCandyStripeTexture() : null), [type]);
+        const signatureTexture = useMemo(() => (type === 'PHOTO' && signatureText ? generateSignatureTexture(signatureText) : null), [type, signatureText]);
+        const fallbackTextures = useMemo(() => (type !== 'PHOTO' ? [] : [generateCardTexture()]), [type]);
+
+        const geometry = useMemo(() => {
+            switch(type) {
+                case 'CANDY': return createCandyCaneGeometry();
+                case 'CRYSTAL': return createStarGeometry(4, 1.0, 0.3, 0.1); 
+                case 'STAR': return createStarGeometry(5, 1.0, 0.5, 0.1);
+                case 'BALL': return new THREE.SphereGeometry(1, 16, 16); 
+                default: return new THREE.BoxGeometry(1, 1, 1);
+            }
+        }, [type]);
+
+        const data = useMemo(() => {
+          const items = [];
+          const goldenAngle = Math.PI * (3 - Math.sqrt(5)); 
+          const treeHeight = 18; const treeRadiusBase = 7.5; const apexY = 9; 
+          let angleOffset = 0;
+          if (type === 'BOX') angleOffset = Math.PI * 2 / 6;
+          if (type === 'STAR') angleOffset = 2 * Math.PI * 2 / 6;
+          if (type === 'CANDY') angleOffset = 3 * Math.PI * 2 / 6;
+          if (type === 'CRYSTAL') angleOffset = 4 * Math.PI * 2 / 6;
+          if (type === 'PHOTO') angleOffset = 5 * Math.PI * 2 / 6;
+
+          for (let i = 0; i < count; i++) {
+            const progress = Math.sqrt((i + 1) / count) * 0.9;
+            const r = progress * treeRadiusBase;
+            const y = apexY - progress * treeHeight;
+            const theta = i * goldenAngle + angleOffset;
+            const x = r * Math.cos(theta);
+            const z = r * Math.sin(theta);
+            const tPos = new THREE.Vector3(x, y, z).multiplyScalar((type === 'STAR' || type === 'PHOTO') ? 1.15 : 1.08);
+
+            let cPos, chaosTilt = 0;
+            if (type === 'PHOTO') {
+                const chaosRadius = 18;
+                const chaosHeightRange = 12;
+                const chaosY = ((i / count) - 0.5) * chaosHeightRange;
+                const chaosTheta = i * goldenAngle;
+                cPos = new THREE.Vector3(chaosRadius * Math.cos(chaosTheta), chaosY, chaosRadius * Math.sin(chaosTheta));
+                chaosTilt = ((i % 5) - 2) * 0.15; 
+            } else {
+                cPos = randomVector3(25);
+            }
+
+            const colorHex = colors ? colors[Math.floor(Math.random() * colors.length)] : '#ffffff';
+            const baseScaleVec = new THREE.Vector3(1, 1, 1);
+            const randScale = Math.random() * 0.4 + 0.8;
+            if (type === 'CANDY' || type === 'STAR') baseScaleVec.setScalar(0.7); 
+            else if (type === 'CRYSTAL') baseScaleVec.setScalar(0.6); 
+            else if (type === 'BOX') baseScaleVec.set(1 + Math.random()*0.3, 0.7 + Math.random()*0.4, 1 + Math.random()*0.3);
+
+            const targetScale = baseScaleVec.clone().multiplyScalar(scale * randScale);
+            let chaosScale = targetScale.clone();
+            if (type === 'PHOTO') {
+                const photoBaseSize = (3.5 + Math.random() * 1.5) * 0.5; 
+                chaosScale.multiplyScalar(photoBaseSize);
+                targetScale.multiplyScalar(0.5); 
+            }
+
+            items.push({
+              chaosPos: cPos, targetPos: tPos,
+              rotation: new THREE.Euler(Math.random()*Math.PI, Math.random()*Math.PI, 0),
+              color: new THREE.Color(colorHex),
+              targetScale: targetScale, chaosScale: chaosScale, chaosTilt: chaosTilt
+            });
+          }
+          return items;
+        }, [count, type, colors, scale]);
+
+        useLayoutEffect(() => {
+           if (!meshRef.current || type === 'PHOTO' || type === 'BOX') return;
+           data.forEach((item, i) => {
+               const color = type === 'CANDY' ? new THREE.Color('#ffffff') : item.color;
+               meshRef.current.setColorAt(i, color);
+               dummy.position.copy(item.targetPos);
+               dummy.scale.copy(item.targetScale);
+               dummy.rotation.copy(item.rotation);
+               dummy.updateMatrix();
+               meshRef.current.setMatrixAt(i, dummy.matrix);
+           });
+           if (meshRef.current.instanceColor) meshRef.current.instanceColor.needsUpdate = true;
+           meshRef.current.instanceMatrix.needsUpdate = true;
+        }, [data, type, dummy]);
+
+        useFrame((state, delta) => {
+          if (meshRef.current && type !== 'PHOTO' && type !== 'BOX') {
+              const speed = 2.0 * delta;
+              currentMixRef.current = lerp(currentMixRef.current, mixFactor, speed);
+              const t = currentMixRef.current;
+              const currentPos = new THREE.Vector3();
+              const currentScale = new THREE.Vector3();
+              
+              data.forEach((item, i) => {
+                currentPos.lerpVectors(item.chaosPos, item.targetPos, t);
+                dummy.position.copy(currentPos);
+                if (type === 'STAR' && t > 0.8) { dummy.lookAt(0, currentPos.y, 0); dummy.rotateZ(Math.PI / 2); } 
+                else if (type === 'CRYSTAL' && t > 0.8) { dummy.lookAt(0, currentPos.y, 0); } 
+                else {
+                   dummy.rotation.copy(item.rotation);
+                }
+                currentScale.lerpVectors(item.chaosScale, item.targetScale, t);
+                dummy.scale.copy(currentScale); 
+                dummy.updateMatrix();
+                meshRef.current.setMatrixAt(i, dummy.matrix);
+              });
+              meshRef.current.instanceMatrix.needsUpdate = true;
+          }
+
+          if (type === 'PHOTO' && photoGroupRef.current) {
+              let minDist = Infinity;
+              let closestIndex = -1;
+              const tempVec = new THREE.Vector3();
+              photoGroupRef.current.children.forEach((child, i) => {
+                  child.getWorldPosition(tempVec);
+                  if (tempVec.z < 2.0) return; 
+                  tempVec.project(camera);
+                  const dist2D = tempVec.x * tempVec.x + tempVec.y * tempVec.y;
+                  if (dist2D < minDist) { minDist = dist2D; closestIndex = i; }
+              });
+              if (minDist < 0.25) activePhotoIndex.current = closestIndex;
+              else activePhotoIndex.current = -1;
+          }
+        });
+
+        if (type === 'PHOTO') {
+            return (
+                <group ref={photoGroupRef}>
+                    {data.map((item, i) => {
+                        let imgSrc = undefined;
+                        if (userImages && userImages.length > 0 && i < userImages.length) imgSrc = userImages[i];
+                        const fallback = fallbackTextures[i % fallbackTextures.length];
+                        return imgSrc ? 
+                            <SuspensePhotoOrnament key={i} index={i} item={item} mixFactor={mixFactor} url={imgSrc} signatureTexture={signatureTexture} activePhotoIndex={activePhotoIndex} inputRef={inputRef} /> : 
+                            <PhotoFrameMesh key={i} index={i} item={item} mixFactor={mixFactor} texture={fallback} signatureTexture={signatureTexture} activePhotoIndex={activePhotoIndex} inputRef={inputRef} />;
+                    })}
+                </group>
+            )
+        }
+        if (type === 'BOX') return <group>{data.map((item, i) => <GiftBoxMesh key={i} item={item} mixFactor={mixFactor} />)}</group>;
+
+        return (
+          <instancedMesh ref={meshRef} args={[geometry, undefined, count]}>
+            <meshStandardMaterial map={candyTexture} roughness={type === 'CANDY' ? 0.2 : 0.15} metalness={type === 'CRYSTAL' ? 0.9 : 0.5} toneMapped={false} />
+          </instancedMesh>
+        );
+      };
+
+      // 3. Spiral Lights
+      const SpiralLights = ({ mixFactor }) => {
+        const count = 100;
+        const meshRef = useRef(null);
+        const dummy = useMemo(() => new THREE.Object3D(), []);
+        const currentMixRef = useRef(1);
+        const { target, chaos } = useMemo(() => generateSpiralData(count, 19, 7.5, 9), []);
+
+        useLayoutEffect(() => {
+           if (!meshRef.current) return;
+           const color = new THREE.Color("#fffae0");
+           for(let i=0; i<count; i++) {
+               meshRef.current.setColorAt(i, color);
+               dummy.position.set(target[i*3], target[i*3+1], target[i*3+2]);
+               dummy.scale.setScalar(0.15);
+               dummy.updateMatrix();
+               meshRef.current.setMatrixAt(i, dummy.matrix);
+           }
+           if (meshRef.current.instanceColor) meshRef.current.instanceColor.needsUpdate = true;
+           meshRef.current.instanceMatrix.needsUpdate = true;
+        }, [target, dummy]);
+
+        useFrame((state, delta) => {
+          if (!meshRef.current) return;
+          const speed = 2.0 * delta;
+          currentMixRef.current = lerp(currentMixRef.current, mixFactor, speed);
+          const t = currentMixRef.current;
+          const time = state.clock.elapsedTime;
+          for(let i=0; i<count; i++) {
+            const tx = target[i*3]; const ty = target[i*3+1]; const tz = target[i*3+2];
+            const cx = chaos[i*3]; const cy = chaos[i*3+1]; const cz = chaos[i*3+2];
+            dummy.position.set(lerp(cx, tx, t), lerp(cy, ty, t), lerp(cz, tz, t));
+            const pulse = Math.sin(time * 3 + i * 0.1) * 0.05 + 0.15;
+            dummy.scale.setScalar(pulse);
+            dummy.updateMatrix();
+            meshRef.current.setMatrixAt(i, dummy.matrix);
+          }
+          meshRef.current.instanceMatrix.needsUpdate = true;
+        });
+
+        return <instancedMesh ref={meshRef} args={[undefined, undefined, count]}><sphereGeometry args={[1, 4, 4]} /><meshBasicMaterial color="#fffae0" toneMapped={false} /></instancedMesh>;
+      };
+
+      // 4. Snow
+      const Snow = ({ mixFactor }) => {
+        const count = 800;
+        const pointsRef = useRef(null);
+        const materialRef = useRef(null);
+        const currentMixRef = useRef(1);
+        const { camera } = useThree();
+        const { positions, scales, velocities } = useMemo(() => {
+          const pos = new Float32Array(count * 3);
+          const sc = new Float32Array(count);
+          const vel = new Float32Array(count * 3);
+          for(let i=0; i<count; i++) {
+              pos[i*3] = (Math.random() - 0.5) * 50; pos[i*3+1] = (Math.random() - 0.5) * 30; pos[i*3+2] = (Math.random() - 0.5) * 40;
+              sc[i] = Math.random() * 2 + 1;
+              vel[i*3] = Math.random() * 0.5 + 0.2; vel[i*3+1] = Math.random() * 2.0 + 1.0; vel[i*3+2] = Math.random() * 0.5 + 0.2;
+          }
+          return { positions: pos, scales: sc, velocities: vel };
+        }, [count]);
+
+        const snowVertex = `
+          precision highp float;
+          uniform float uTime; uniform float uMix;
+          attribute float aScale; attribute vec3 aVelocity;
+          varying float vAlpha;
+          void main() {
+            vec3 pos = position;
+            float fallSpeed = aVelocity.y; 
+            pos.y = mod(pos.y - uTime * fallSpeed + 15.0, 30.0) - 15.0;
+            float drift = sin(uTime * aVelocity.x + pos.y) * (0.5 + (1.0 - uMix) * 2.0);
+            pos.x += drift; pos.z += cos(uTime * aVelocity.z + pos.x) * 0.5;
+            vec4 mvPosition = modelViewMatrix * vec4(pos, 1.0);
+            gl_Position = projectionMatrix * mvPosition;
+            gl_PointSize = aScale * (15.0 / -mvPosition.z);
+            vAlpha = 1.0 - smoothstep(12.0, 15.0, abs(pos.y));
+          }
+        `;
+        const snowFragment = `precision highp float; varying float vAlpha; void main() { vec2 coord = gl_PointCoord - vec2(0.5); float dist = length(coord); if (dist > 0.5) discard; float alpha = (1.0 - smoothstep(0.3, 0.5, dist)) * vAlpha * 0.8; gl_FragColor = vec4(1.0, 1.0, 1.0, alpha); }`;
+
+        useFrame((state, delta) => {
+           if (materialRef.current && pointsRef.current) {
+               currentMixRef.current = lerp(currentMixRef.current, mixFactor, delta * 2.0);
+               materialRef.current.uniforms.uTime.value = state.clock.elapsedTime;
+               materialRef.current.uniforms.uMix.value = currentMixRef.current;
+               pointsRef.current.position.x = camera.position.x;
+               pointsRef.current.position.y = camera.position.y;
+           }
+        });
+
+        return (
+          <points ref={pointsRef} frustumCulled={false}>
+            <bufferGeometry>
+              <bufferAttribute attach="attributes-position" count={count} array={positions} itemSize={3} />
+              <bufferAttribute attach="attributes-aScale" count={count} array={scales} itemSize={1} />
+              <bufferAttribute attach="attributes-aVelocity" count={count} array={velocities} itemSize={3} />
+            </bufferGeometry>
+            <shaderMaterial ref={materialRef} vertexShader={snowVertex} fragmentShader={snowFragment} uniforms={{ uTime: { value: 0 }, uMix: { value: 1 } }} transparent depthWrite={false} />
+          </points>
+        );
+      };
+
+      // 5. Top Star
+      const TopStar = ({ mixFactor }) => {
+        const groupRef = useRef(null);
+        const starMeshRef = useRef(null);
+        const currentMixRef = useRef(1);
+        const geometry = useMemo(() => {
+            const shape = new THREE.Shape();
+            const step = (Math.PI * 2) / 10;
+            shape.moveTo(0, 1.2);
+            for(let i = 0; i < 10; i++) {
+                const radius = (i % 2 === 0) ? 1.2 : 0.6;
+                const angle = i * step + Math.PI/2;
+                shape.lineTo(Math.cos(angle) * radius, Math.sin(angle) * radius);
+            }
+            shape.closePath();
+            const geom = new THREE.ExtrudeGeometry(shape, { depth: 0.4, bevelEnabled: false });
+            geom.center();
+            return geom;
+        }, []);
+
+        useFrame((state, delta) => {
+            if (!groupRef.current || !starMeshRef.current) return;
+            currentMixRef.current = lerp(currentMixRef.current, mixFactor, 2.0 * delta);
+            const t = currentMixRef.current;
+            groupRef.current.position.set(0, lerp(13.0, 9.2, t), 0);
+            starMeshRef.current.rotation.y += delta * 0.5;
+            if (t < 0.9) {
+                const chaosTilt = (1 - t) * 0.5;
+                groupRef.current.rotation.z = Math.sin(state.clock.elapsedTime) * chaosTilt;
+                groupRef.current.rotation.x = Math.cos(state.clock.elapsedTime * 0.8) * chaosTilt;
+            } else {
+                groupRef.current.rotation.z = lerp(groupRef.current.rotation.z, 0, 2.0 * delta);
+                groupRef.current.rotation.x = lerp(groupRef.current.rotation.x, 0, 2.0 * delta);
+            }
+        });
+
+        return (
+          <group ref={groupRef}>
+              <mesh ref={starMeshRef} geometry={geometry}>
+                  <meshStandardMaterial color="#FFD700" emissive="#FFD700" emissiveIntensity={2.0} toneMapped={false} />
+              </mesh>
+              <pointLight color="#ffeebf" intensity={2.0} distance={10} decay={2} />
+          </group>
+        );
+      };
+
+      // 6. Gesture Controller
+      const GestureController = ({ onGesture, isGuiVisible, cameraResetKey }) => {
+        const webcamRef = useRef(null);
+        const [model, setModel] = useState(null);
+        const [loading, setLoading] = useState(true);
+        const [cameraError, setCameraError] = useState(false);
+        const [debugState, setDebugState] = useState("-");
+        const [loadingMessage, setLoadingMessage] = useState("初始化...");
+        
+        const onGestureRef = useRef(onGesture);
+        useEffect(() => { onGestureRef.current = onGesture; }, [onGesture]);
+
+        const lastDetectionTime = useRef(0);
+        const ratioHistory = useRef([]);
+        const posHistory = useRef([]);
+        const isCurrentlyOpen = useRef(false);
+        const isCurrentlyPinching = useRef(false);
+        const missedFrames = useRef(0);
+
+        useEffect(() => {
+          let isMounted = true;
+          const loadModel = async () => {
+            try {
+              setLoadingMessage("GPU...");
+              await tf.ready();
+              if (isMounted) setLoadingMessage("加载模型...");
+              const net = await handpose.load();
+              if (isMounted) {
+                setModel(net);
+                setLoading(false);
+              }
+            } catch (err) {
+              if (isMounted) { setLoadingMessage("错误"); setLoading(false); }
+            }
+          };
+          loadModel();
+          return () => { isMounted = false; };
+        }, []);
+
+        const runDetection = useCallback(async () => {
+          if (model && webcamRef.current?.video) {
+            const video = webcamRef.current.video;
+            
+            // Check if video is ready
+            if (video.readyState !== 4) {
+               if (video.paused) {
+                   try { await video.play(); } catch(e) {}
+               }
+               requestAnimationFrame(runDetection);
+               return;
+            }
+
+            const now = Date.now();
+            if (now - lastDetectionTime.current < 150) return requestAnimationFrame(runDetection);
+            lastDetectionTime.current = now;
+
+            if (video.videoWidth === 0 || video.videoHeight === 0) return requestAnimationFrame(runDetection);
+
+            try {
+              const predictions = await model.estimateHands(video);
+              if (predictions.length > 0) {
+                missedFrames.current = 0;
+                const landmarks = predictions[0].landmarks;
+                const wrist = landmarks[0];
+                
+                const rawX = -1 * ((wrist[0] / video.videoWidth) * 2 - 1); 
+                const rawY = -1 * ((wrist[1] / video.videoHeight) * 2 - 1);
+                
+                posHistory.current.push({x: rawX, y: rawY});
+                if (posHistory.current.length > 6) posHistory.current.shift();
+                const avgPos = posHistory.current.reduce((a, c) => ({ x: a.x + c.x, y: a.y + c.y }), {x:0, y:0});
+                const x = avgPos.x / posHistory.current.length;
+                const y = avgPos.y / posHistory.current.length;
+
+                const getDist = (p1, p2) => Math.sqrt(Math.pow(p1[0] - p2[0], 2) + Math.pow(p1[1] - p2[1], 2));
+                
+                let tipDist = 0, baseDist = 0;
+                [8,12,16,20].forEach((t, i) => tipDist += getDist(wrist, landmarks[t]));
+                [5,9,13,17].forEach((b, i) => baseDist += getDist(wrist, landmarks[b]));
+                const ratio = tipDist / (baseDist || 1);
+                
+                ratioHistory.current.push(ratio);
+                if (ratioHistory.current.length > 5) ratioHistory.current.shift();
+                const smoothRatio = ratioHistory.current.reduce((a,b)=>a+b,0)/ratioHistory.current.length;
+
+                if (!isCurrentlyOpen.current && smoothRatio > 1.6) isCurrentlyOpen.current = true;
+                else if (isCurrentlyOpen.current && smoothRatio < 1.2) isCurrentlyOpen.current = false;
+
+                const thumbTip = landmarks[4];
+                const indexTip = landmarks[8];
+                const middleBase = landmarks[9];
+                
+                const handSize = getDist(wrist, middleBase);
+                const pinchDistance = getDist(thumbTip, indexTip);
+                const pinchThreshold = handSize * 0.35;
+                const isPinchDetected = pinchDistance < pinchThreshold;
+
+                if (isPinchDetected) isCurrentlyPinching.current = true;
+                else if (pinchDistance > pinchThreshold * 1.5) isCurrentlyPinching.current = false;
+
+                let state = isCurrentlyOpen.current ? "张开 (待机)" : "握拳 (控制)";
+                if (isCurrentlyPinching.current) state = "捏合 (旋转)";
+                setDebugState(state);
+
+                if (onGestureRef.current) onGestureRef.current({ 
+                    isOpen: isCurrentlyOpen.current, 
+                    isPinching: isCurrentlyPinching.current, 
+                    position: { x, y }, 
+                    isDetected: true 
+                });
+              } else {
+                missedFrames.current++;
+                if (missedFrames.current > 5) {
+                    setDebugState("...");
+                    if (onGestureRef.current) onGestureRef.current({ isOpen: false, isPinching: false, position: {x:0, y:0}, isDetected: false });
+                }
+              }
+            } catch (err) {}
+          }
+          requestAnimationFrame(runDetection);
+        }, [model]);
+
+        useEffect(() => {
+          if (model && !loading) requestAnimationFrame(runDetection);
+        }, [model, loading, runDetection]);
+
+        const boxStyle = "w-24 h-32 rounded-lg border-[#d4af37]/50 bg-black/90 border overflow-hidden shadow-[0_0_20px_rgba(212,175,55,0.2)]";
+
+        return (
+          <div className={`fixed bottom-4 right-4 z-50 transition-all duration-500 ${isGuiVisible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-10 pointer-events-none'}`}>
+            <div className={`relative ${boxStyle}`}>
+                {cameraError ? (
+                   <div className="flex flex-col items-center justify-center h-full text-[#d4af37] p-2 text-center gap-2">
+                      <span className="text-xl">📷</span>
+                   </div>
+                ) : (
+                  <>
+                      {/* Using Key to Force Remount on file upload return */}
+                      <Webcam 
+                        key={cameraResetKey}
+                        ref={webcamRef} 
+                        mirrored={true} 
+                        playsInline={true}
+                        muted={true}
+                        className={`w-full h-full object-cover transition-opacity duration-500 ${loading?'opacity-20':'opacity-80'}`} 
+                        onUserMediaError={() => setCameraError(true)} 
+                      />
+                  </>
+                )}
+                
+                <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black via-black/90 to-transparent pt-6 pb-2 px-3 flex justify-center">
+                  <span className={`text-[9px] font-mono font-bold whitespace-nowrap ${debugState.includes("张开") || debugState.includes("捏合") ? "text-white" : "text-[#d4af37]"}`}>{debugState}</span>
+                </div>
+            </div>
+          </div>
+        );
+      };
+
+      // 7. Scene Controller
+      const SceneController = ({ inputRef, groupRef }) => {
+          const { camera, gl } = useThree();
+          const zoomTarget = useRef(32); 
+          const currentInput = useRef({ x: 0, y: 0 }); 
+          const rotationVelocity = useRef(0.002);
+          const wasDetected = useRef(false);
+          const grabOffset = useRef(0);
+          const vec = useMemo(() => new THREE.Vector3(), []);
+
+          useEffect(() => {
+              const onWheel = (e) => {
+                  zoomTarget.current = Math.max(12, Math.min(55, zoomTarget.current + e.deltaY * 0.02));
+              };
+              gl.domElement.addEventListener('wheel', onWheel, { passive: false });
+              return () => gl.domElement.removeEventListener('wheel', onWheel);
+          }, [gl]);
+
+          useFrame((state, delta) => {
+              const safeDelta = Math.min(delta, 0.1);
+              const targetX = inputRef.current.x;
+              const targetY = inputRef.current.y;
+              const isHandDetected = !!inputRef.current.isDetected;
+              const isPinching = !!inputRef.current.isPinching;
+
+              currentInput.current.x = lerp(currentInput.current.x, targetX, 1.5 * safeDelta);
+              currentInput.current.y = lerp(currentInput.current.y, targetY, 1.5 * safeDelta);
+
+              const camX = currentInput.current.x * 4; 
+              const camY = currentInput.current.y * 2; 
+              const camZ = zoomTarget.current + Math.abs(currentInput.current.x) * 2; 
+              camera.position.lerp(vec.set(camX, camY, camZ), 4.0 * safeDelta);
+              camera.lookAt(0, 0, 0);
+
+              if (groupRef.current) {
+                  if (isPinching) {
+                      rotationVelocity.current = lerp(rotationVelocity.current, 0, safeDelta * 5.0);
+                      groupRef.current.rotation.y += rotationVelocity.current;
+                      wasDetected.current = true;
+                      grabOffset.current = groupRef.current.rotation.y - (currentInput.current.x * Math.PI * 1.2);
+                  } else if (isHandDetected) {
+                      const targetHandRotation = currentInput.current.x * Math.PI * 1.2;
+                      const targetTilt = currentInput.current.y * 0.85; 
+                      groupRef.current.rotation.x = lerp(groupRef.current.rotation.x, targetTilt, safeDelta * 4.0);
+
+                      if (!wasDetected.current) {
+                          grabOffset.current = groupRef.current.rotation.y - targetHandRotation;
+                          rotationVelocity.current = 0;
+                      }
+                      const targetAngle = targetHandRotation + grabOffset.current;
+                      const prevRot = groupRef.current.rotation.y;
+                      groupRef.current.rotation.y = lerp(prevRot, targetAngle, 6.0 * safeDelta);
+                      rotationVelocity.current = groupRef.current.rotation.y - prevRot;
+                      wasDetected.current = true;
+                  } else {
+                      groupRef.current.rotation.x = lerp(groupRef.current.rotation.x, 0, safeDelta * 2.0);
+                      if (wasDetected.current) {
+                          if (Math.abs(rotationVelocity.current) < 0.0001) rotationVelocity.current = 0.002; 
+                          wasDetected.current = false;
+                      }
+                      groupRef.current.rotation.y += rotationVelocity.current;
+                      rotationVelocity.current = lerp(rotationVelocity.current, 0.002, safeDelta * 0.5);
+                  }
+              }
+          });
+          return null;
+      };
+
+      const Experience = ({ mixFactor, colors, inputRef, userImages, signatureText }) => {
+          const groupRef = useRef(null);
+          const BALL_COLORS = ['#8B0000', '#D32F2F', '#1B5E20', '#D4AF37', '#C0C0C0', '#191970'];
+          const BOX_COLORS = ['#800000', '#1B5E20', '#D4AF37', '#FFFFFF', '#4B0082', '#2F4F4F', '#008080', '#8B4513', '#DC143C'];
+          
+          return (
+            <Canvas dpr={[1, 1]} camera={{ position: [0, 0, 32], fov: 45, near: 0.1, far: 80 }} gl={{ toneMappingExposure: 1.1 }}>
+              <SceneController inputRef={inputRef} groupRef={groupRef} />
+              <ambientLight intensity={0.6} />
+              <pointLight position={[10, 10, 10]} intensity={1.5} color="#fff5d0" />
+              <pointLight position={[-10, 5, -10]} intensity={1.2} color="#00ff00" />
+              <pointLight position={[10, -5, 10]} intensity={1.2} color="#ff0000" />
+              
+              <Environment files="https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/1k/potsdamer_platz_1k.hdr" background={false} />
+              <Stars radius={100} depth={50} count={1000} factor={4} saturation={0} fade speed={1} />
+              <Snow mixFactor={mixFactor} />
+
+              <group ref={groupRef}>
+                 <group rotation={[0, Math.PI / 2, 0]}>
+                    <TopStar mixFactor={mixFactor} />
+                    <Foliage mixFactor={mixFactor} colors={colors} />
+                    <SpiralLights mixFactor={mixFactor} />
+                    <Ornaments mixFactor={mixFactor} type="BALL" count={30} scale={0.5} colors={BALL_COLORS} />
+                    <Ornaments mixFactor={mixFactor} type="BOX" count={15} scale={0.6} colors={BOX_COLORS} />
+                    <Ornaments mixFactor={mixFactor} type="STAR" count={15} scale={0.5} colors={['#FFD700']} />
+                    <Ornaments mixFactor={mixFactor} type="CRYSTAL" count={20} scale={0.4} />
+                    <Ornaments mixFactor={mixFactor} type="CANDY" count={20} scale={0.8} />
+                    <Ornaments mixFactor={mixFactor} type="PHOTO" count={userImages.length || 10} userImages={userImages} signatureText={signatureText} inputRef={inputRef} />
+                </group>
+              </group>
+
+              {/* POST PROCESSING: Restored for visuals */}
+              <EffectComposer enableNormalPass={false} multisampling={0}>
+                  <Bloom luminanceThreshold={0.9} mipmapBlur intensity={1.5} radius={0.6} />
+                  <Vignette eskil={false} offset={0.1} darkness={1.1} />
+              </EffectComposer>
+            </Canvas>
+          );
+      };
+
+      // 8. Main App
+      const App = () => {
+          const [targetMix, setTargetMix] = useState(1); 
+          const [colors] = useState({ bottom: '#5c182a', top: '#ffb7c5' }); 
+          const [userImages, setUserImages] = useState([]);
+          const [isProcessing, setIsProcessing] = useState(false);
+          const [isSignatureOpen, setIsSignatureOpen] = useState(false);
+          const [signatureText, setSignatureText] = useState("");
+          const [activePhotoUrl, setActivePhotoUrl] = useState(null);
+          const [showCamera, setShowCamera] = useState(true);
+          // New state for forcing camera restart
+          const [cameraResetKey, setCameraResetKey] = useState(0);
+
+          const fileInputRef = useRef(null);
+          const inputRef = useRef({ x: 0, y: 0, isDetected: false, isPinching: false });
+
+          const handleGesture = useCallback((data) => {
+            if (data.isDetected) {
+                const newTarget = data.isOpen ? 0 : 1;
+                setTargetMix(prev => (prev !== newTarget ? newTarget : prev));
+                inputRef.current = { x: data.position.x * 0.5, y: data.position.y * 0.5, isDetected: true, isPinching: data.isPinching };
+            } else {
+                inputRef.current.isDetected = false;
+                inputRef.current.isPinching = false;
+            }
+          }, []);
+
+          const handleFileChange = (e) => {
+              if (e.target.files?.length) {
+                  setIsProcessing(true);
+                  setTargetMix(0);
+                  setTimeout(() => {
+                      const urls = Array.from(e.target.files).slice(0, 30).map(file => URL.createObjectURL(file));
+                      setUserImages(prev => { prev.forEach(u => URL.revokeObjectURL(u)); return urls; });
+                      if(fileInputRef.current) fileInputRef.current.value = '';
+                      
+                      setTimeout(() => { 
+                        setIsProcessing(false); 
+                        // FORCE CAMERA RESTART AFTER UPLOAD
+                        setCameraResetKey(prev => prev + 1);
+                        setTimeout(() => setTargetMix(1), 800); 
+                      }, 1200);
+                  }, 50);
+              }
+          };
+
+          const openSignature = () => {
+              if (userImages.length) setActivePhotoUrl(userImages[Math.floor(Math.random() * userImages.length)]);
+              else setActivePhotoUrl(null);
+              setIsSignatureOpen(true);
+          }
+
+          const btnClass = "w-10 h-10 rounded-full bg-black/30 backdrop-blur border border-white/20 text-slate-300 hover:bg-white/10 hover:text-white flex items-center justify-center cursor-pointer transition-all active:scale-95";
+
+          return (
+            <div className="relative w-full h-screen bg-black overflow-hidden">
+              <input type="file" ref={fileInputRef} onChange={handleFileChange} accept="image/*" multiple className="hidden" />
+              
+              {isProcessing && <div className="absolute inset-0 z-50 bg-black/90 flex flex-col items-center justify-center text-[#d4af37] font-luxury animate-pulse"><div>资源加载中...</div></div>}
+
+              <div className={`absolute inset-0 z-10 transition-all duration-700 ${isSignatureOpen ? 'blur-sm scale-95 opacity-50' : ''}`}>
+                <Experience mixFactor={targetMix} colors={colors} inputRef={inputRef} userImages={userImages} signatureText={signatureText} />
+              </div>
+
+              {isSignatureOpen && (
+                  <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/60 backdrop-blur p-4">
+                      <div className="relative bg-[#f8f8f8] p-4 pb-12 w-full max-w-sm shadow-[0_0_50px_rgba(255,255,255,0.2)] rotate-[-2deg]">
+                          <button onClick={() => setIsSignatureOpen(false)} className="absolute -top-4 -right-4 w-8 h-8 rounded-full bg-black text-white">×</button>
+                          <div className="w-full h-56 bg-[#1a1a1a] overflow-hidden relative">
+                              {activePhotoUrl ? <img src={activePhotoUrl} className="w-full h-full object-cover" /> : <div className="text-white/40 h-full flex items-center justify-center italic">暂无照片</div>}
+                          </div>
+                          <input autoFocus type="text" placeholder="输入您的祝福..." value={signatureText} onChange={e => setSignatureText(e.target.value)} className="w-full text-center bg-transparent border-none outline-none font-script text-4xl mt-4" maxLength={20} />
+                          <button onClick={() => setIsSignatureOpen(false)} className="absolute bottom-[-50px] left-1/2 -translate-x-1/2 bg-black/80 text-white px-8 py-2 text-xs uppercase font-luxury tracking-widest hover:bg-white hover:text-black transition-colors">确认生成</button>
+                      </div>
+                  </div>
+              )}
+
+              <div className={`absolute top-4 right-4 z-30 flex flex-col gap-3 ${isSignatureOpen ? 'opacity-0 pointer-events-none' : ''}`}>
+                  <button onClick={() => setShowCamera(!showCamera)} className={btnClass}>{showCamera ? '📷' : '🚫'}</button>
+                  <button onClick={() => fileInputRef.current?.click()} className={btnClass}>⬆️</button>
+                  <button onClick={openSignature} className={btnClass}>✍️</button>
+                  <button onClick={() => setTargetMix(prev => prev === 1 ? 0 : 1)} className={btnClass}>{targetMix === 1 ? '💥' : '✨'}</button>
+              </div>
+
+              <GestureController onGesture={handleGesture} isGuiVisible={showCamera} cameraResetKey={cameraResetKey} />
+            </div>
+          );
+      };
+
+      const root = ReactDOM.createRoot(document.getElementById('root'));
+      root.render(<App />);
+    </script>
+  </body>
+</html>
